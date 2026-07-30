@@ -339,16 +339,21 @@ func (kwsh *KiwiWebSocketHandler) HandleKiwiSMeter(w http.ResponseWriter, r *htt
 		return
 	}
 	freqKHz, err := strconv.ParseFloat(raw[:freqEnd], 64)
-	if err != nil || freqKHz <= 0 || freqKHz > 30000 {
-		http.Error(w, "frequency out of range (0–30000 kHz)", http.StatusBadRequest)
+	if err != nil || freqKHz <= 0 {
+		http.Error(w, "invalid frequency", http.StatusBadRequest)
+		return
+	}
+	freqHz := uint64(freqKHz * 1000)
+	if !kwsh.config.IsFrequencySupported(freqHz) {
+		minHz, maxHz := kwsh.config.FrequencyRange()
+		http.Error(w, fmt.Sprintf("frequency out of range (%g–%g kHz)",
+			float64(minHz)/1000, float64(maxHz)/1000), http.StatusBadRequest)
 		return
 	}
 	mode := "cwn"
 	if freqEnd < len(raw) {
 		mode = raw[freqEnd:]
 	}
-	freqHz := uint64(freqKHz * 1000)
-
 	// ── 2. Create an internal session (empty clientIP = exempt from limits) ─
 	// Use a unique userSessionID so DestroySession can find it cleanly.
 	internalID := fmt.Sprintf("s-meter-%d", time.Now().UnixNano())

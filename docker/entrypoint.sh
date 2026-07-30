@@ -344,7 +344,7 @@ else
 fi
 
 # Trigger radiod restart on ubersdr startup
-if [ "$1" = "ka9q_ubersdr" ]; then
+if [ "$1" = "ka9q_ubersdr" ] && [ "${MANAGE_RADIOD:-true}" = "true" ]; then
     echo "Triggering radiod restart for clean state..."
     mkdir -p /var/run/restart-trigger
     

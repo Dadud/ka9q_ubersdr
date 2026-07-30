@@ -10,7 +10,7 @@ class NoiseFloorMonitor {
         this.dynamicRangeChart = null;
         this.ft8SnrChart = null;
         this.bandStateChart = null;
-        this.wideBandChart = null; // Wide-band spectrum chart (0-30 MHz)
+        this.wideBandChart = null;
         this.refreshInterval = null;
         this.fftRefreshInterval = null;
         this.currentDate = 'live';
@@ -25,6 +25,9 @@ class NoiseFloorMonitor {
         // Wideband zoom controls
         this.widebandFrequency = 15; // MHz (center frequency)
         this.widebandWidth = 30000; // kHz (total width)
+        this.widebandMinMHz = 0;
+        this.widebandMaxMHz = 30;
+        this.widebandBoundsInitialized = false;
 
         // Comparison dates for historical single-band view
         this.comparisonDates = {
@@ -222,7 +225,7 @@ class NoiseFloorMonitor {
             frequencyInput.addEventListener('change', (e) => {
                 let value = parseFloat(e.target.value);
                 // Clamp to valid range
-                value = Math.max(0, Math.min(30, value));
+                value = Math.max(this.widebandMinMHz, Math.min(this.widebandMaxMHz, value));
                 this.widebandFrequency = value;
                 frequencySlider.value = value;
                 frequencyValue.textContent = value.toFixed(3);
@@ -235,7 +238,8 @@ class NoiseFloorMonitor {
             widthInput.addEventListener('change', (e) => {
                 let value = parseFloat(e.target.value);
                 // Clamp to valid range
-                value = Math.max(3, Math.min(30000, value));
+                const maxWidthKHz = (this.widebandMaxMHz - this.widebandMinMHz) * 1000;
+                value = Math.max(3, Math.min(maxWidthKHz, value));
                 this.widebandWidth = value;
                 widthSlider.value = value;
                 widthValue.textContent = value.toFixed(0);
@@ -247,16 +251,17 @@ class NoiseFloorMonitor {
         // Reset button event listener
         if (resetButton) {
             resetButton.addEventListener('click', () => {
-                // Reset to defaults: 15 MHz center, 30000 kHz width
-                this.widebandFrequency = 15;
-                this.widebandWidth = 30000;
+                const centerMHz = (this.widebandMinMHz + this.widebandMaxMHz) / 2;
+                const widthKHz = (this.widebandMaxMHz - this.widebandMinMHz) * 1000;
+                this.widebandFrequency = centerMHz;
+                this.widebandWidth = widthKHz;
                 
-                if (frequencySlider) frequencySlider.value = 15;
-                if (widthSlider) widthSlider.value = 30000;
-                if (frequencyValue) frequencyValue.textContent = '15.000';
-                if (widthValue) widthValue.textContent = '30000';
-                if (frequencyInput) frequencyInput.value = '15.000';
-                if (widthInput) widthInput.value = '30000';
+                if (frequencySlider) frequencySlider.value = centerMHz;
+                if (widthSlider) widthSlider.value = widthKHz;
+                if (frequencyValue) frequencyValue.textContent = centerMHz.toFixed(3);
+                if (widthValue) widthValue.textContent = widthKHz.toFixed(0);
+                if (frequencyInput) frequencyInput.value = centerMHz.toFixed(3);
+                if (widthInput) widthInput.value = widthKHz.toFixed(0);
                 
                 this.updateWidebandZoom();
             });
@@ -1402,7 +1407,7 @@ class NoiseFloorMonitor {
 
     async createWideBandSpectrum(canvasId) {
         try {
-            // Fetch wide-band FFT data (0-30 MHz)
+            // Fetch the current receiver-wide FFT.
             const response = await fetch('/api/noisefloor/fft/wideband');
 
             if (!response.ok) {
@@ -1424,19 +1429,46 @@ class NoiseFloorMonitor {
                 loadingEl.style.display = 'none';
             }
 
-            // Calculate frequency labels correctly
-            // The FFT is centered, so we need to calculate based on center frequency
-            // After unwrapping: data goes from (center - bandwidth/2) to (center + bandwidth/2)
             const numBins = fftData.data.length;
             const binWidthHz = fftData.bin_width;
-            const totalBandwidthHz = numBins * binWidthHz;
-            
-            // Calculate actual start frequency (center - half bandwidth)
-            // For 15 MHz center with 30 MHz bandwidth: start = 0 MHz, end = 30 MHz
-            const centerFreqHz = 15000000; // 15 MHz (from backend config)
-            const startFreqHz = centerFreqHz - (totalBandwidthHz / 2);
+            const startFreqHz = Number(fftData.start_freq);
+            const endFreqHz = Number(fftData.end_freq);
+            if (!Number.isFinite(startFreqHz) || !Number.isFinite(endFreqHz) || endFreqHz <= startFreqHz) {
+                console.error('Wide-band FFT is missing valid frequency bounds');
+                return;
+            }
             const startFreqMHz = startFreqHz / 1e6;
             const binWidthMHz = binWidthHz / 1e6;
+            this.widebandMinMHz = startFreqMHz;
+            this.widebandMaxMHz = endFreqHz / 1e6;
+
+            if (!this.widebandBoundsInitialized) {
+                this.widebandBoundsInitialized = true;
+                this.widebandFrequency = (this.widebandMinMHz + this.widebandMaxMHz) / 2;
+                this.widebandWidth = (this.widebandMaxMHz - this.widebandMinMHz) * 1000;
+                const frequencySlider = document.getElementById('wideband-frequency');
+                const frequencyInput = document.getElementById('wideband-frequency-input');
+                const frequencyValue = document.getElementById('wideband-frequency-value');
+                const widthSlider = document.getElementById('wideband-width');
+                const widthInput = document.getElementById('wideband-width-input');
+                const widthValue = document.getElementById('wideband-width-value');
+                for (const control of [frequencySlider, frequencyInput]) {
+                    if (control) {
+                        control.min = this.widebandMinMHz;
+                        control.max = this.widebandMaxMHz;
+                        control.value = this.widebandFrequency;
+                    }
+                }
+                const maxWidthKHz = this.widebandWidth;
+                for (const control of [widthSlider, widthInput]) {
+                    if (control) {
+                        control.max = maxWidthKHz;
+                        control.value = maxWidthKHz;
+                    }
+                }
+                if (frequencyValue) frequencyValue.textContent = this.widebandFrequency.toFixed(3);
+                if (widthValue) widthValue.textContent = maxWidthKHz.toFixed(0);
+            }
 
             // Create frequency labels in MHz
             const frequencies = [];
@@ -1446,11 +1478,10 @@ class NoiseFloorMonitor {
             }
 
             // Calculate Y-axis range from actual data with small padding
-            // Only use data from valid frequency range (0-30 MHz) to exclude FFT artifacts
             const validIndices = [];
             const validValues = [];
             for (let i = 0; i < frequencies.length; i++) {
-                if (frequencies[i] >= 0 && frequencies[i] <= 30) {
+                if (frequencies[i] >= this.widebandMinMHz && frequencies[i] <= this.widebandMaxMHz) {
                     validIndices.push(i);
                     validValues.push(fftData.data[i]);
                 }
@@ -1821,7 +1852,8 @@ class NoiseFloorMonitor {
                     const xScale = this.wideBandChart.scales.x;
                     const freqMHz = xScale.getValueForPixel(x);
                     
-                    if (freqMHz !== undefined && freqMHz !== null && freqMHz >= 0 && freqMHz <= 30) {
+                    if (freqMHz !== undefined && freqMHz !== null &&
+                        freqMHz >= this.widebandMinMHz && freqMHz <= this.widebandMaxMHz) {
                         // Update the frequency slider, value, and input
                         this.widebandFrequency = freqMHz;
                         const frequencySlider = document.getElementById('wideband-frequency');
@@ -1864,8 +1896,8 @@ class NoiseFloorMonitor {
                 const factor = e.deltaY < 0 ? 0.85 : 1.0 / 0.85;
                 let newWidth = this.widebandWidth * factor;
 
-                // Clamp to slider range [3, 30000]
-                newWidth = Math.max(3, Math.min(30000, newWidth));
+                const maxWidthKHz = (this.widebandMaxMHz - this.widebandMinMHz) * 1000;
+                newWidth = Math.max(3, Math.min(maxWidthKHz, newWidth));
                 this.widebandWidth = newWidth;
 
                 if (widthSlider) widthSlider.value = newWidth;
@@ -1903,9 +1935,8 @@ class NoiseFloorMonitor {
         const minFreq = this.widebandFrequency - halfWidth;
         const maxFreq = this.widebandFrequency + halfWidth;
 
-        // Ensure we stay within 0-30 MHz bounds
-        const clampedMin = Math.max(0, minFreq);
-        const clampedMax = Math.min(30, maxFreq);
+        const clampedMin = Math.max(this.widebandMinMHz, minFreq);
+        const clampedMax = Math.min(this.widebandMaxMHz, maxFreq);
 
         // Update the x-axis range
         this.wideBandChart.options.scales.x.min = clampedMin;

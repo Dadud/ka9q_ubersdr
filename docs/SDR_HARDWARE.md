@@ -99,6 +99,28 @@ radiod:
 responsible for discovery, sample-format conversion, time/discontinuity
 metadata, tuning, gain controls, and publishing the KA9Q multicast protocol.
 
+### Docker with an external receiver service
+
+When radiod or a KA9Q-compatible Soapy/vendor bridge already runs on the host
+or another machine, start only the Web UI and decoder container:
+
+```bash
+cd docker
+ADMIN_PASSWORD="choose-a-password" \
+  docker compose -f docker-compose.external-radiod.yml up -d --build
+```
+
+This deployment uses host networking so KA9Q multicast discovery, status, and
+sample traffic can reach the container without a multicast relay. It sets
+`MANAGE_RADIOD=false`, so the Web UI does not emit restart triggers for an
+externally owned receiver service. Configure `receiver.backend:
+external-radiod` and the matching `radiod.status_group`, `data_group`, and host
+network interface in `config.yaml`.
+
+The external service retains ownership of USB/vendor devices. Do not expose
+the same SDR to both an external bridge and the standard local-radio Compose
+stack at the same time.
+
 ## Generating a native radiod configuration
 
 Authenticated administrators can inspect the catalog:

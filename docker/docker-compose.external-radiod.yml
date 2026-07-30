@@ -1,0 +1,26 @@
+services:
+  # Web UI and decoder stack for a radiod or KA9Q-compatible bridge managed
+  # outside this Compose project. Host networking is required for discovery
+  # and multicast sample/status traffic to cross the Docker boundary reliably.
+  ubersdr:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: ${UBERSDR_IMAGE:-ka9q_ubersdr:latest}
+    container_name: ka9q_ubersdr
+    restart: unless-stopped
+    init: true
+    network_mode: host
+    cap_add:
+      - NET_ADMIN
+    shm_size: "2024m"
+    environment:
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      TZ: ${TZ:-UTC}
+      DEBUG: ${DEBUG:-false}
+      MANAGE_RADIOD: "false"
+    volumes:
+      - ubersdr-config:/app/config
+
+volumes:
+  ubersdr-config:
