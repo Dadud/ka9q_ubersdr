@@ -16,6 +16,7 @@ RUN apt-get update \
     && git clone https://github.com/madpsy/ka9q-radio.git /src/ka9q-radio \
     && git -C /src/ka9q-radio checkout "${KA9Q_RADIO_REV}" \
     && make -C /src/ka9q-radio/src \
+    && useradd --system --user-group --home-dir /var/lib/ka9q-radio radio \
     && make -C /src/ka9q-radio/src install \
     && make -C /src/ka9q-radio/share install \
     && mkdir -p /etc/ka9q-radio /usr/local/share/ka9q-radio/config-templates \
