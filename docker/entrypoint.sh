@@ -390,8 +390,12 @@ if [ "$1" = "ka9q_ubersdr" ] && [ "${MANAGE_RADIOD:-true}" = "true" ]; then
     ) &
 fi
 
+# Hardware preflight is a subcommand of the same audited binary.
+if [ "$1" = "sdr-autoconfigure" ]; then
+    shift
+    exec ka9q_ubersdr sdr-autoconfigure "$@"
 # If the command is ka9q_ubersdr, add the -config-dir flag.
-if [ "$1" = "ka9q_ubersdr" ]; then
+elif [ "$1" = "ka9q_ubersdr" ]; then
     shift
     exec ka9q_ubersdr -config-dir /app/config "$@"
 else

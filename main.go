@@ -388,6 +388,12 @@ func main() {
 	// Record start time for uptime tracking
 	StartTime = time.Now()
 
+	// The Docker preflight service uses the same audited binary as the Web UI.
+	// Handle this subcommand before normal server flags/configuration.
+	if len(os.Args) > 1 && os.Args[1] == "sdr-autoconfigure" {
+		os.Exit(runSDRAutoconfigureCommand(os.Args[2:]))
+	}
+
 	// Parse command line flags
 	configDir := flag.String("config-dir", ".", "Directory containing configuration files")
 	configFile := flag.String("config", "config.yaml", "Path to configuration file")
@@ -3025,6 +3031,8 @@ func main() {
 	http.HandleFunc("/admin/decoder-bands", adminHandler.AuthMiddleware(adminHandler.HandleDecoderBands))
 	http.HandleFunc("/admin/cwskimmer-config", adminHandler.AuthMiddleware(adminHandler.HandleCWSkimmerConfig))
 	http.HandleFunc("/admin/receiver-profiles", adminHandler.AuthMiddleware(adminHandler.HandleReceiverProfiles))
+	http.HandleFunc("/admin/sdr-hardware", adminHandler.AuthMiddleware(adminHandler.HandleSDRHardware))
+	http.HandleFunc("/admin/sdr-driver-bundle", adminHandler.AuthMiddleware(adminHandler.HandleSDRDriverBundle))
 	http.HandleFunc("/admin/radiod-config", adminHandler.AuthMiddleware(adminHandler.HandleRadiodConfig))
 	http.HandleFunc("/admin/radiod-values", adminHandler.AuthMiddleware(adminHandler.HandleRadiodValues))
 	http.HandleFunc("/admin/system-stats", adminHandler.AuthMiddleware(adminHandler.HandleSystemStats))

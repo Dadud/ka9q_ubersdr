@@ -1,13 +1,42 @@
 services:
+  # One-shot hardware preflight. It inspects USB sysfs without lsusb, chooses a
+  # deterministic model profile, and writes both receiver configs before radiod
+  # starts. If no supported device is ready it installs a synthetic setup
+  # receiver so the Web UI remains reachable.
+  sdr-autoconfig:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: ${UBERSDR_IMAGE:-ka9q_ubersdr:latest}
+    container_name: ultrasdr-sdr-autoconfig
+    privileged: true
+    restart: "no"
+    command: ["sdr-autoconfigure"]
+    volumes:
+      - /dev/bus/usb:/dev/bus/usb
+      - /sys/bus/usb/devices:/sys/bus/usb/devices:ro
+      - radiod-config:/etc/ka9q-radio
+      - ubersdr-config:/app/config
+      - sdr-drivers:/opt/ultrasdr-drivers
+    environment:
+      - TZ=${TZ:-UTC}
+      - SDR_PROFILE=${SDR_PROFILE:-}
+      - SDR_SERIAL=${SDR_SERIAL:-}
+      - SDR_AUTOCONFIG_FORCE=${SDR_AUTOCONFIG_FORCE:-false}
+      - MANAGE_RADIOD=false
+
   # ka9q-radio backend (radiod) - SDR receiver daemon
   ka9q-radio:
     build:
-      context: ../../ka9q-radio
-      dockerfile: docker/Dockerfile
+      context: ..
+      dockerfile: docker/Dockerfile.radio
     image: ${KA9Q_RADIO_IMAGE:-ka9q-radio:latest}
     container_name: ka9q-radio
     privileged: true
     restart: unless-stopped
+    depends_on:
+      sdr-autoconfig:
+        condition: service_completed_successfully
 
     # Use external bridge network for multicast communication
     networks:
@@ -22,6 +51,7 @@ services:
       - radiod-config:/etc/ka9q-radio
       # Persistent data directory for recordings and wisdom
       - radiod-data:/var/lib/ka9q-radio
+      - sdr-drivers:/opt/ultrasdr-drivers:ro
       # Optional: Mount custom configuration from host (overrides persistent volume)
       # - ../../ka9q-radio/docker/radiod@ubersdr.conf:/etc/ka9q-radio/radiod@ubersdr.conf
       # Shared volume for restart trigger
@@ -75,11 +105,16 @@ services:
 
     # Volumes for persistent configuration only (static files are part of the image)
     volumes:
+      # Read-only access lets the admin Hardware Setup panel rescan after a
+      # hot-plug; only the radio container opens the device.
+      - /dev/bus/usb:/dev/bus/usb:ro
+      - /sys/bus/usb/devices:/sys/bus/usb/devices:ro
       - ubersdr-config:/app/config
       # Shared volume for restart trigger
       - restart-trigger:/var/run/restart-trigger
       # Shared radiod config for read/write access (allows ubersdr to modify radiod config)
       - radiod-config:/etc/ka9q-radio
+      - sdr-drivers:/opt/ultrasdr-drivers
       # Shared volume for Caddy configuration
       - caddy-shared:/etc/caddy-shared
       # Version updater directory (accessible from host)
@@ -177,4 +212,5 @@ volumes:
   caddy-data:
   caddy-config:
   caddy-shared:
+  sdr-drivers:
   # Note: updater directory is bind-mounted from host (./updater)

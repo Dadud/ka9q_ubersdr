@@ -1,0 +1,36 @@
+# Reproducible KA9Q Radio image for the self-contained UltraSDR stack.
+# Keep this revision synchronized with docs/SDR_EXPANSION_PLAN.md.
+FROM ubuntu:24.04
+
+ARG KA9Q_RADIO_REV=77d0fbab81a1d617162a60f3d53bb8be2aa06f75
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+       build-essential ca-certificates git rsync pkg-config libcap2-bin procps iproute2 \
+       libbsd-dev libiniparser-dev libopus-dev libavahi-client-dev \
+       libavahi-common-dev libncursesw5-dev portaudio19-dev \
+       libsamplerate0-dev libogg-dev libvorbis-dev libfftw3-dev uuid-dev \
+       libusb-1.0-0-dev libairspy-dev libairspyhf-dev librtlsdr-dev \
+       libhackrf-dev libbladerf-dev \
+    && git clone https://github.com/madpsy/ka9q-radio.git /src/ka9q-radio \
+    && git -C /src/ka9q-radio checkout "${KA9Q_RADIO_REV}" \
+    && make -C /src/ka9q-radio/src \
+    && make -C /src/ka9q-radio/src install \
+    && make -C /src/ka9q-radio/share install \
+    && mkdir -p /etc/ka9q-radio /usr/local/share/ka9q-radio/config-templates \
+       /var/lib/ka9q-radio /var/run/restart-trigger \
+    && cp -a /src/ka9q-radio/config/. /usr/local/share/ka9q-radio/config-templates/ \
+    && apt-get purge -y build-essential git rsync pkg-config \
+    && apt-get autoremove -y \
+    && rm -rf /var/lib/apt/lists/* /src/ka9q-radio
+
+COPY docker/radio-entrypoint.sh /usr/local/bin/ultrasdr-radio-entrypoint
+RUN chmod +x /usr/local/bin/ultrasdr-radio-entrypoint
+
+WORKDIR /etc/ka9q-radio
+ENTRYPOINT ["/usr/local/bin/ultrasdr-radio-entrypoint"]
+CMD ["/etc/ka9q-radio/radiod@ubersdr.conf"]
+
+HEALTHCHECK --interval=10s --timeout=5s --start-period=15s --retries=6 \
+    CMD pgrep -x radiod >/dev/null || exit 1

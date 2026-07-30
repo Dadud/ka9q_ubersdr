@@ -42,7 +42,7 @@ jobs:
           node --check static/extensions/signalling/main.js
           jq empty static/extensions/digitalvoice/manifest.json
           jq empty static/extensions/signalling/manifest.json
-          bash -n docker/entrypoint.sh docker/decoder-healthcheck.sh
+          bash -n docker/entrypoint.sh docker/radio-entrypoint.sh docker/decoder-healthcheck.sh
 
   docker:
     name: Docker image build
@@ -63,3 +63,5 @@ jobs:
           push: false
           cache-from: type=gha
           cache-to: type=gha,mode=max
+      - name: Build self-contained KA9Q Radio image
+        run: docker build -f docker/Dockerfile.radio -t ultrasdr-radio:test .

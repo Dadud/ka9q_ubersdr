@@ -4901,6 +4901,157 @@ func (ah *AdminHandler) HandleReceiverProfiles(w http.ResponseWriter, r *http.Re
 	}
 }
 
+// HandleSDRHardware is the authenticated control plane for USB discovery and
+// deterministic receiver setup. GET is read-only. POST applies one selected
+// ready profile, updates both configs atomically, and optionally restarts the
+// two receiver services through the existing restart trigger.
+func (ah *AdminHandler) HandleSDRHardware(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	sysfsRoot := getenvDefault("SDR_SYSFS_ROOT", defaultSDRSysfsRoot)
+	statePath := getenvDefault("SDR_STATE_PATH", filepath.Join(ah.configDir, "sdr-autoconfig.json"))
+	radiodPath := getenvDefault("SDR_RADIOD_CONFIG", defaultRadiodConfig)
+	driverRoot := getenvDefault("SDR_DRIVER_ROOT", defaultSDRDriverRoot)
+
+	switch r.Method {
+	case http.MethodGet:
+		devices, err := DetectUSBDevices(sysfsRoot)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("USB discovery failed: %v", err), http.StatusInternalServerError)
+			return
+		}
+		status := PlanSDRAutoConfig(devices, "", "")
+		resolveInstalledSDRDrivers(&status, driverRoot)
+		if data, err := os.ReadFile(statePath); err == nil {
+			var persisted SDRAutoConfigStatus
+			if json.Unmarshal(data, &persisted) == nil {
+				status.Managed = persisted.Managed
+			}
+		}
+		if err := json.NewEncoder(w).Encode(status); err != nil {
+			log.Printf("Error encoding SDR hardware status: %v", err)
+		}
+
+	case http.MethodPost:
+		var request struct {
+			ProfileID string `json:"profile_id"`
+			Serial    string `json:"serial"`
+			Restart   bool   `json:"restart"`
+		}
+		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&request); err != nil {
+			http.Error(w, fmt.Sprintf("Invalid hardware selection: %v", err), http.StatusBadRequest)
+			return
+		}
+		if strings.TrimSpace(request.ProfileID) == "" {
+			http.Error(w, "profile_id is required", http.StatusBadRequest)
+			return
+		}
+		status, err := RunSDRAutoConfig(SDRAutoConfigOptions{
+			SysfsRoot:        sysfsRoot,
+			UberSDRConfig:    ah.configFile,
+			RadiodConfig:     radiodPath,
+			StatePath:        statePath,
+			DriverRoot:       driverRoot,
+			RequestedProfile: request.ProfileID,
+			RequestedSerial:  request.Serial,
+			Force:            true,
+		})
+		if err != nil {
+			http.Error(w, fmt.Sprintf("Hardware setup failed: %v", err), http.StatusInternalServerError)
+			return
+		}
+		if status.State != "ready" {
+			w.WriteHeader(http.StatusConflict)
+			_ = json.NewEncoder(w).Encode(status)
+			return
+		}
+		if status.Selected != nil {
+			ah.config.Receiver = status.Selected.Profile.Receiver
+			ah.config.Admin.DefaultFrequency = status.Selected.Profile.DefaultFrequency
+			ah.config.Admin.DefaultMode = status.Selected.Profile.DefaultMode
+		}
+		if request.Restart {
+			status.Message += "; receiver services are restarting"
+			if err := json.NewEncoder(w).Encode(status); err != nil {
+				log.Printf("Error encoding SDR apply response: %v", err)
+			}
+			go ah.restartServerReason("SDR hardware profile applied")
+			return
+		}
+		if err := json.NewEncoder(w).Encode(status); err != nil {
+			log.Printf("Error encoding SDR apply response: %v", err)
+		}
+
+	default:
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// HandleSDRDriverBundle installs an admin-supplied, checksummed set of shared
+// libraries. It accepts no scripts, packages, hooks, device nodes, or absolute
+// paths. Vendor license acceptance must be explicit for every upload.
+func (ah *AdminHandler) HandleSDRDriverBundle(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	r.Body = http.MaxBytesReader(w, r.Body, maxSDRDriverBundleBytes+(2<<20))
+	if err := r.ParseMultipartForm(maxSDRDriverBundleBytes); err != nil {
+		http.Error(w, fmt.Sprintf("Invalid driver bundle upload: %v", err), http.StatusBadRequest)
+		return
+	}
+	if !strings.EqualFold(r.FormValue("license_accepted"), "true") {
+		http.Error(w, "You must explicitly accept the vendor license", http.StatusBadRequest)
+		return
+	}
+	file, _, err := r.FormFile("bundle")
+	if err != nil {
+		http.Error(w, "A bundle ZIP is required", http.StatusBadRequest)
+		return
+	}
+	defer file.Close()
+
+	root := getenvDefault("SDR_DRIVER_ROOT", defaultSDRDriverRoot)
+	if err := os.MkdirAll(root, 0755); err != nil {
+		http.Error(w, fmt.Sprintf("Cannot prepare driver storage: %v", err), http.StatusInternalServerError)
+		return
+	}
+	temp, err := os.CreateTemp(root, ".upload-*.zip")
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Cannot stage driver bundle: %v", err), http.StatusInternalServerError)
+		return
+	}
+	tempPath := temp.Name()
+	defer os.Remove(tempPath)
+	written, copyErr := io.Copy(temp, io.LimitReader(file, maxSDRDriverBundleBytes+1))
+	closeErr := temp.Close()
+	if copyErr != nil || closeErr != nil || written > maxSDRDriverBundleBytes {
+		http.Error(w, "Driver bundle upload failed or exceeded the size limit", http.StatusBadRequest)
+		return
+	}
+	staged, err := os.Open(tempPath)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Cannot read staged bundle: %v", err), http.StatusInternalServerError)
+		return
+	}
+	defer staged.Close()
+	manifest, err := InstallSDRDriverBundle(staged, written, root, true)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Driver bundle rejected: %v", err), http.StatusBadRequest)
+		return
+	}
+	if err := json.NewEncoder(w).Encode(map[string]interface{}{
+		"status":   "installed",
+		"manifest": manifest,
+		"message":  fmt.Sprintf("%s driver bundle %s installed; rescan and apply the receiver", manifest.IntegrationID, manifest.Version),
+	}); err != nil {
+		log.Printf("Error encoding driver bundle response: %v", err)
+	}
+}
+
 // handleGetRadiodConfig returns the radiod configuration file content
 func (ah *AdminHandler) handleGetRadiodConfig(w http.ResponseWriter, r *http.Request) {
 	// Read the radiod config file from /etc/ka9q-radio/radiod@ubersdr.conf

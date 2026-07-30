@@ -1258,6 +1258,26 @@
 
                 <!-- Radiod Config Tab -->
                 <div id="radiodTab" class="tab-content">
+                    <div class="config-section" style="margin-bottom: 20px; border: 2px solid #4f46e5; border-radius: 8px; padding: 18px; background: #f7f7ff;">
+                        <h3 style="margin: 0 0 8px 0; color: #312e81;">📻 SDR Hardware Setup</h3>
+                        <p style="margin: 0 0 14px 0; color: #4b5563;">
+                            UltraSDR detects attached USB receivers and chooses safe, model-specific sample rate, tuning range, gain, and mode defaults.
+                            Bias power is never enabled automatically.
+                        </p>
+                        <div id="sdrHardwareStatus" class="loading" style="min-height: 42px;">
+                            <div class="spinner"></div>
+                            <p>Scanning USB devices...</p>
+                        </div>
+                        <div id="sdrHardwareActions" style="display: none; margin-top: 14px;">
+                            <label for="sdrHardwareSelect" style="display: block; font-weight: 600; margin-bottom: 6px;">Receiver</label>
+                            <div style="display: flex; flex-wrap: wrap; gap: 10px; align-items: center;">
+                                <select id="sdrHardwareSelect" style="min-width: 300px; max-width: 100%; padding: 9px; border: 1px solid #a5b4fc; border-radius: 5px;"></select>
+                                <button class="btn btn-secondary" onclick="loadSDRHardwareStatus()">Scan Again</button>
+                                <button class="btn" id="applySDRHardwareBtn" onclick="applySDRHardware()">Use This Receiver & Restart</button>
+                            </div>
+                            <div id="sdrDriverHelp" style="display: none; margin-top: 12px; padding: 12px; background: #fff3cd; border: 1px solid #f59e0b; border-radius: 5px;"></div>
+                        </div>
+                    </div>
                     <div id="radiodWarning" class="alert" style="margin-bottom: 20px; background: #fff3cd; border: 2px solid #ffc107; color: #856404;">
                         ⚠️ <strong>WARNING:</strong> Editing the radiod configuration is for advanced users only and may break UberSDR.
                         <div style="margin-top: 15px;">
@@ -4466,6 +4486,7 @@ frame.contentWindow.postMessage({ command: 'getState', params: {} }, SDR_ORIGIN)
                 activateTabBtn('radiod');
                 document.getElementById('radiodTab').classList.add('active');
                 document.getElementById('radiodButtons').style.display = 'flex';
+                loadSDRHardwareStatus();
                 loadRadiodConfig();
             } else if (tab === 'radiod-channels') {
                 activateTabBtn('radiod-channels');
@@ -18053,6 +18074,160 @@ const tooltipLine2 = timeStr;
         // Radiod configuration management
         let currentRadiodConfig = '';
         let radiodEditingEnabled = false;
+        let sdrHardwareCandidates = [];
+
+        async function loadSDRHardwareStatus() {
+            const statusEl = document.getElementById('sdrHardwareStatus');
+            const actionsEl = document.getElementById('sdrHardwareActions');
+            const selectEl = document.getElementById('sdrHardwareSelect');
+            const helpEl = document.getElementById('sdrDriverHelp');
+            statusEl.className = 'loading';
+            statusEl.innerHTML = '<div class="spinner"></div><p>Scanning USB devices...</p>';
+            actionsEl.style.display = 'none';
+            helpEl.style.display = 'none';
+
+            try {
+                const response = await authenticatedFetch('/admin/sdr-hardware');
+                if (!response) return;
+                if (!response.ok) throw new Error(await response.text());
+                const data = await response.json();
+                sdrHardwareCandidates = Array.isArray(data.candidates) ? data.candidates : [];
+
+                const stateLabels = {
+                    ready: ['✅', 'Ready'],
+                    'needs-hardware': ['🔌', 'No supported USB SDR detected'],
+                    'needs-selection': ['🔀', 'Choose one attached receiver'],
+                    'needs-driver': ['📦', 'Vendor driver required'],
+                    'manual-config-preserved': ['🛡️', 'Manual configuration preserved']
+                };
+                const label = stateLabels[data.state] || ['ℹ️', data.state || 'Unknown'];
+                const detectedCount = Array.isArray(data.detected) ? data.detected.length : 0;
+                statusEl.className = '';
+                statusEl.innerHTML = `
+                    <div style="font-size: 16px; font-weight: 700; color: #312e81;">${label[0]} ${escapeHtml(label[1])}</div>
+                    <div style="margin-top: 5px; color: #4b5563;">${escapeHtml(data.message || '')}</div>
+                    <div style="margin-top: 5px; font-size: 12px; color: #6b7280;">${detectedCount} USB device${detectedCount === 1 ? '' : 's'} inspected · ${sdrHardwareCandidates.length} SDR match${sdrHardwareCandidates.length === 1 ? '' : 'es'}</div>`;
+
+                selectEl.innerHTML = '';
+                sdrHardwareCandidates.forEach((candidate, index) => {
+                    const option = document.createElement('option');
+                    option.value = String(index);
+                    const serial = candidate.device?.serial ? ` · ${candidate.device.serial}` : '';
+                    option.textContent = `${candidate.profile.display_name}${serial} · ${candidate.device.vendor_id}:${candidate.device.product_id}`;
+                    if (data.selected &&
+                        data.selected.profile?.id === candidate.profile?.id &&
+                        data.selected.device?.serial === candidate.device?.serial) {
+                        option.selected = true;
+                    }
+                    selectEl.appendChild(option);
+                });
+
+                actionsEl.style.display = 'block';
+                document.getElementById('applySDRHardwareBtn').disabled = sdrHardwareCandidates.length === 0;
+                selectEl.disabled = sdrHardwareCandidates.length === 0;
+                selectEl.onchange = updateSDRDriverHelp;
+                updateSDRDriverHelp();
+            } catch (error) {
+                statusEl.className = 'alert alert-error';
+                statusEl.textContent = 'USB scan failed: ' + error.message;
+            }
+        }
+
+        function updateSDRDriverHelp() {
+            const selectEl = document.getElementById('sdrHardwareSelect');
+            const helpEl = document.getElementById('sdrDriverHelp');
+            const button = document.getElementById('applySDRHardwareBtn');
+            const candidate = sdrHardwareCandidates[Number(selectEl.value)];
+            if (!candidate) {
+                helpEl.style.display = 'none';
+                return;
+            }
+            if (candidate.profile.integration === 'native') {
+                helpEl.style.display = 'none';
+                button.textContent = 'Use This Receiver & Restart';
+                return;
+            }
+            helpEl.style.display = 'block';
+            helpEl.innerHTML = `<strong>Vendor component needed:</strong> ${escapeHtml(candidate.profile.notes || 'Install the matching vendor driver bundle first.')}
+                <br><span style="font-size: 12px;">UltraSDR accepts a checksummed ZIP containing only the matching radio module and shared libraries. It never runs an installer script from the browser.</span>
+                <div style="margin-top: 10px; display: flex; flex-direction: column; gap: 8px;">
+                    <input type="file" id="sdrDriverBundleFile" accept=".zip,application/zip">
+                    <label style="display: flex; gap: 7px; align-items: flex-start; font-size: 12px;">
+                        <input type="checkbox" id="sdrDriverLicenseAccepted">
+                        <span>I downloaded this package from the vendor or another authorized source and accept its license.</span>
+                    </label>
+                    <div><button class="btn btn-secondary" onclick="uploadSDRDriverBundle()">Install Driver Bundle</button></div>
+                </div>`;
+            button.textContent = 'Check Driver & Configure';
+        }
+
+        async function uploadSDRDriverBundle() {
+            const fileInput = document.getElementById('sdrDriverBundleFile');
+            const accepted = document.getElementById('sdrDriverLicenseAccepted');
+            if (!fileInput?.files?.length) {
+                showAlert('Choose an UltraSDR driver bundle ZIP first.', 'error');
+                return;
+            }
+            if (!accepted?.checked) {
+                showAlert('Accept the vendor license before installing the bundle.', 'error');
+                return;
+            }
+            const form = new FormData();
+            form.append('bundle', fileInput.files[0]);
+            form.append('license_accepted', 'true');
+            try {
+                showAlert('Validating and installing the driver bundle...', 'info');
+                const response = await authenticatedFetch('/admin/sdr-driver-bundle', {
+                    method: 'POST',
+                    body: form
+                });
+                if (!response) return;
+                if (!response.ok) throw new Error(await response.text());
+                const result = await response.json();
+                showAlert(result.message || 'Driver bundle installed.', 'success');
+                await loadSDRHardwareStatus();
+            } catch (error) {
+                showAlert('Driver bundle was not installed: ' + error.message, 'error');
+            }
+        }
+
+        async function applySDRHardware() {
+            const candidate = sdrHardwareCandidates[Number(document.getElementById('sdrHardwareSelect').value)];
+            if (!candidate) {
+                showAlert('Select an attached SDR first.', 'error');
+                return;
+            }
+            if (!confirm(`Configure ${candidate.profile.display_name} with safe defaults and restart the receiver services?`)) {
+                return;
+            }
+            const button = document.getElementById('applySDRHardwareBtn');
+            const originalText = button.textContent;
+            button.disabled = true;
+            button.textContent = 'Applying...';
+            try {
+                const response = await authenticatedFetch('/admin/sdr-hardware', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        profile_id: candidate.profile.id,
+                        serial: candidate.device.serial || '',
+                        restart: true
+                    })
+                });
+                if (!response) return;
+                const data = await response.json();
+                if (!response.ok) {
+                    throw new Error(data.message || 'The matching driver is not ready.');
+                }
+                showAlert(data.message || 'SDR configured. Receiver services are restarting.', 'success');
+                setTimeout(showRestartCountdown, 500);
+            } catch (error) {
+                showAlert('SDR setup could not be completed: ' + error.message, 'error');
+                button.disabled = false;
+                button.textContent = originalText;
+                loadSDRHardwareStatus();
+            }
+        }
 
         async function loadRadiodConfig() {
             try {
